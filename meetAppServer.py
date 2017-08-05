@@ -18,6 +18,8 @@ import time
 import sys
 import ast
 import MySQLdb as mdb
+import threading
+import datetime
 
 
 ###### Main server #########
@@ -28,6 +30,7 @@ PORT = 9404
 DEBUG = True
 SHOW_RAW_MSGS = False
 NO_OF_CONNECTIONS = 0
+PONG_TIMEOUT = 30       # seconds
 DB_NAME = "meetapp_server"
 DB_USER = "root"
 DB_PASSWD = "linux"
@@ -35,6 +38,8 @@ DB_PASSWD = "linux"
 #### Global variables ####
 
 activeUsers = []
+onlineClientsNumbers = []
+offlineClientNumbers = []
 connectionAlreadyExists = False
 replaceCount = 0
 
@@ -46,6 +51,8 @@ try:
 except:
     sys.exit("Error connecting MySQL database")
 
+
+### Core functions ###
 
 def initDB():
     print "Initializing MySQL database."
@@ -59,7 +66,7 @@ def initDB():
         db.execute("create database %s" % DB_NAME)
         db.execute("use %s" % DB_NAME)
         db.execute("create table registration_table(_id BIGINT NOT NULL AUTO_INCREMENT, registered_number VARCHAR(20) NOT NULL, PRIMARY KEY(_id))")
-        db.execute("create table store_and_fwd_table(_id BIGINT NOT NULL AUTO_INCREMENT, arrive_timestamp VARCHAR(20), expire_timestamp VARCHAR(20), send_to VARCHAR(15), message VARCHAR(4000), PRIMARY KEY(_id))")
+        db.execute("create table store_and_fwd_table(_id BIGINT NOT NULL AUTO_INCREMENT, arrive_timestamp VARCHAR(20), expire_timestamp VARCHAR(20), send_to VARCHAR(15), sent_from VARCHAR(15), message VARCHAR(4000), PRIMARY KEY(_id))")
         con.commit()
 
 def onOpen(msg,socket):
@@ -81,6 +88,8 @@ def onOpen(msg,socket):
             activeUsers.append(tempDict)
             if DEBUG:
                 print "New connection created : %s" % phoneNumberFormatter(msg['from'])
+        # THIS WILL SYNC DATA ON CONNECTION
+        checkIfOnline(phoneNumberFormatter(msg['from']))
 
 def onRegisterUserRequest(req):
     if req['type'] == "register":
@@ -121,15 +130,95 @@ def onContactSyncRequest(req, socket):
             print resp
         socket.write_message(resp)
 
+def checkIfOnline(number):
+    sendPingTo(number)
+    startWaitForPongThread(number)
+
+def onPong(resp,socket):
+    if(resp['type'] == "pong"):
+        number = phoneNumberFormatter(str(resp['from']))
+        for thread in threading.enumerate():
+            if thread.name == number:
+                thread.run = False
+                sendToPonger(number,socket)
+
+def sendToPonger(number,socket):
+    db.execute("use meetapp_server")
+    db.execute("select _id, message from store_and_fwd_table where send_to='%s'" % number)
+    results = db.fetchall()
+    for i in range(0,len(results)):
+        _id = results[i][0]
+        msg = results[i][1]
+        socket.write_message(msg)
+        db.execute("delete from store_and_fwd_table where _id=%d" % _id)
+    con.commit()
+    if DEBUG:
+        print "Sending stored messages to ponger: %s" % number
+
+
+def sendPingTo(number):
+    lenghtOfActiveUsers = len(activeUsers)
+    for i in range(0,lenghtOfActiveUsers):
+        if(activeUsers[i].keys()[0] == str(number)):
+            tempDict = activeUsers[i]
+            socket = tempDict[str(number)]
+            pingFrame = {'from':'server','type':'ping'}
+            socket.write_message(json.dumps(pingFrame))
+            if DEBUG:
+                print "Sent ping to: " + str(number)
+
+def registerAsOffline(number):
+    if number in offlineClientNumbers:
+        pass
+    else:
+        offlineClientNumbers.append(str(number))
+
+def startWaitForPongThread(number):
+    number = str(number)
+    t = threading.Thread(target=waitingThread, name=number, args=(number,))
+    t.start()
+
+def waitingThread(number):
+    if DEBUG:
+        print "Started waiting thread for pong from: %s" % number
+    t = threading.current_thread()
+    timeCnt = 0
+    while(timeCnt < PONG_TIMEOUT and getattr(t,'run',True)):
+        time.sleep(1)
+        timeCnt += 1
+    print "TIME_CNT: " + str(timeCnt) + "\tPONG_TIMEOUT: " + str(PONG_TIMEOUT)
+    if(timeCnt == PONG_TIMEOUT):
+        registerAsOffline(number)
+        if DEBUG:
+            print "Waiting thread expired - Adding to offline list: %s" % number
+    else:
+        if number in offlineClientNumbers:
+            offlineClientNumbers.remove(number)
+        if DEBUG:
+            print "Pong recived from: %s" % number
+
+def onMeetingRequest(req):
+    if(req['type'] == 'immidiet' or req['type'] == 'scheduled'):
+        sent_from = phoneNumberFormatter(str(req['from']))
+        send_to = phoneNumberFormatter(str(req['to']))
+        msg = str(req)
+        now = str(datetime.datetime.now().strftime("%d/%m/%y %I:%M:%S"))
+        expiry = str(getMsgExpiryDate(datetime.datetime.now()))
+        db.execute("use meetapp_server")
+        db.execute("insert into store_and_fwd_table (arrive_timestamp, expire_timestamp, send_to, sent_from, message) values ('%s', '%s', '%s', '%s', \"%s\")" % (now, expiry, send_to, sent_from, msg))
+        con.commit()
+        checkIfOnline(send_to)
+
+
 ##### WebSocketHandler class #####
 
 class WSHandler(tornado.websocket.WebSocketHandler):
 
     def open(self):
+        global NO_OF_CONNECTIONS
+        NO_OF_CONNECTIONS += 1
         if DEBUG:
-            global NO_OF_CONNECTIONS
             print "New connection: " + self.request.remote_ip
-            NO_OF_CONNECTIONS += 1
             print "No of connections: " + str(NO_OF_CONNECTIONS)
 
     def on_message(self,message):
@@ -140,6 +229,8 @@ class WSHandler(tornado.websocket.WebSocketHandler):
         onOpen(msg,self)
         onRegisterUserRequest(msg)
         onContactSyncRequest(msg,self)
+        onPong(msg,self)
+        onMeetingRequest(msg)
 
         if SHOW_RAW_MSGS:
             print message
@@ -150,10 +241,11 @@ class WSHandler(tornado.websocket.WebSocketHandler):
 
     def on_close(self):
         global NO_OF_CONNECTIONS
-        print "Connection closed by " + self.request.remote_ip
         if NO_OF_CONNECTIONS > 0:
             NO_OF_CONNECTIONS -= 1
-            print "No of connections: " + str(NO_OF_CONNECTIONS)
+            if DEBUG:
+                print "No of connections: " + str(NO_OF_CONNECTIONS)
+                print "Connection closed by " + self.request.remote_ip
 
 
 #### Helper functions ####
@@ -167,18 +259,14 @@ def phoneNumberFormatter(number):
     number = number.replace("_","")
     return number
 
-def sendPingTo(number):
-    lenghtOfActiveUsers = len(activeUsers)
-    for i in range(0,lenghtOfActiveUsers):
-        if(activeUsers[i].keys()[0] == str(number)):
-            tempDict = activeUsers[i]
-            socket = tempDict[str(number)]
-            pingFrame = {'from':'server','type':'ping'}
-            socket.write_message(json.dumps(pingFrame))
-            if DEBUG:
-                print "Sent ping to: " + str(number)
+def getMsgExpiryDate(datetime):
+    try:
+        datetime = datetime.replace(month=(datetime.month+1))
+    except:
+        datetime = datetime.replace(year=datetime.year+1,month=1)
+    return datetime.strftime("%d/%m/%y %H:%M:%S")
 
-//# TODO: Implement pong receive
+# TODO: Implement pong receive and do things on pong repsponse -- stop timer/timeout login on pong receive to determine online/offline state
 
 
 #### Main program ####
