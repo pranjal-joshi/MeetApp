@@ -28,7 +28,7 @@ import datetime
 
 PORT = 9404
 DEBUG = True
-SHOW_RAW_MSGS = False
+SHOW_RAW_MSGS = False or True
 NO_OF_CONNECTIONS = 0
 PONG_TIMEOUT = 30       # seconds
 DB_NAME = "meetapp_server"
@@ -217,6 +217,22 @@ def onMeetingRequest(req):
         con.commit()
         checkIfOnline(send_to)
 
+def onMeetingRequestResponse(resp):
+    if(resp['type'] == 'meetingRequestResponse'):
+        sent_from = phoneNumberFormatter(str(resp['from']))
+        send_to = getFullRegisteredNumberFrom(phoneNumberFormatter(str(resp['to'])))
+        msg  = str(resp)
+        msg = ast.literal_eval(msg)
+        msg['to'] = send_to
+        msg = json.dumps(msg)
+        msg = str(msg).replace("\"","\'")
+        now = str(datetime.datetime.now().strftime("%d/%m/%y %I:%M:%S"))
+        expiry = str(getMsgExpiryDate(datetime.datetime.now()))
+        db.execute("use meetapp_server")
+        db.execute("insert into store_and_fwd_table (arrive_timestamp, expire_timestamp, send_to, sent_from, message) values ('%s', '%s', '%s', '%s', \"%s\")" % (now, expiry, send_to, sent_from, msg))
+        con.commit()
+        checkIfOnline(send_to)
+
 
 ##### WebSocketHandler class #####
 
@@ -239,6 +255,7 @@ class WSHandler(tornado.websocket.WebSocketHandler):
         onContactSyncRequest(msg,self)
         onPong(msg,self)
         onMeetingRequest(msg)
+        onMeetingRequestResponse(msg)
 
         if SHOW_RAW_MSGS:
             print message
@@ -258,7 +275,7 @@ class WSHandler(tornado.websocket.WebSocketHandler):
 
 #### Helper functions ####
 
-def phoneNumberFormatter(number):
+def phoneNumberFormatter(number):                   # Phone number string cleaner
     number = str(number)
     number = number.replace(" ","")
     number = number.replace(")","")
@@ -267,21 +284,21 @@ def phoneNumberFormatter(number):
     number = number.replace("_","")
     return number
 
-def getMsgExpiryDate(datetime):
+def getMsgExpiryDate(datetime):                     # store_and_fwd expiry calculator
     try:
         datetime = datetime.replace(month=(datetime.month+1))
     except:
         datetime = datetime.replace(year=datetime.year+1,month=1)
     return datetime.strftime("%d/%m/%y %H:%M:%S")
 
-def reasignAutoIncrementOfStoreAndFwd():
+def reasignAutoIncrementOfStoreAndFwd():            # auto_increment maintainer
     db.execute("use meetapp_server")
     db.execute("alter table store_and_fwd_table drop _id")
     db.execute("alter table store_and_fwd_table auto_increment=1")
     db.execute("alter table store_and_fwd_table add _id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST")
     con.commit()
 
-def getFullRegisteredNumberFrom(number):
+def getFullRegisteredNumberFrom(number):            # Gives country_code + number for given only number
     number = str(number[-10:])
     db.execute("use meetapp_server")
     db.execute("select registered_number from registration_table where registered_number like '%{}%'".format(str(number)))
