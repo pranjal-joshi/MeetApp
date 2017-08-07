@@ -1,0 +1,133 @@
+
+// client - registeration - Done----------------------
+{
+  'from':'myNumber',
+  'type':'register',
+}
+
+// server -registeration
+{
+  'from':'server',
+  'type':'encryptionKey',
+  'key':'someRandomStringOfFixedSize'
+}
+
+// server - Ping client - Done----------------------
+{
+  'from':'server',
+  'type':'ping'
+}
+
+// client - Pong server - Done----------------------
+{
+  'from':'number',
+  'type':'pong'
+}
+
+// client - open connection - Done-----------------
+{
+  'from':'mynumber',
+  'type':'onOpen'
+}
+
+//ContactSync - request - Done---------------------
+{
+  'phonebook':
+  {
+    '1':'number',
+    '2':'number2'
+    ....
+  },
+  'total':'150',
+  'from':'myPhoneNumber',
+  'type':'syncRequest'
+}
+
+//ContactSync - response - Done in android ---------
+{
+  'from':'server',
+  'exisitingCount':'NumberOfContactEntriesPresent',
+  'type':'syncResponse',
+  'syncedNumbers':
+  {
+    '1':'number',
+    '2':'number2'
+  }
+}
+
+//MeetingRequest to server if u send req to other user
+{
+  'from':'mynumber',
+  'to':'receiversNumber',
+  'type':'immidiet/scheduled',
+  'details':
+  {
+    'lat':'lattitude',
+    'lon':'longitude',
+    'year':'y',  optional
+    'month':'month',
+    'day':'day',
+    'hour':'h'      optional,
+    'minute':'min',
+    'ampm':'AM'
+  }
+}
+
+// MeetingRequest from server if other user send u req
+{
+  'from':'server',
+  'sender':'sendersnumber',
+  'type':'immidiet/scheduled',
+  'details':
+  {
+    'lat':'lattitude',
+    'lon':'longitude',
+    'year':'y',  optional
+    'month':'month',
+    'day':'day',
+    'hour':'h'      optional,
+    'minute':'min',
+    'ampm':'AM'
+  }
+}
+
+//LocationUpdateService to server
+{
+  'from':'myNumber',
+  'type':'locationUpdate',
+  'details':
+  {
+    'lat':'lattitude',
+    'lon':'longitude',
+    'distance':'stringKM',
+    'duration':'string M S',
+    'mode':'walking'
+  }
+}
+
+//LocationOfSecondUser from server to show trip
+{
+  'from':'server',
+  'type':'locationInfo',
+  'sender':'sendersNumber',
+  'details':
+  {
+    'lat':'lattitude',
+    'lon':'longitude',
+    'distance':'string',
+    'duration':'string',
+    'mode':'driving'
+  }
+}
+
+// Request accept/reject response - from slideAction in meetingDetailsActivity
+
+{
+  'from':'myNumber',
+  'to':'requestersNumber',
+  'type':'meetingRequestResponse',
+  'lat':'lat',
+  'lon':'lon',
+  'schedTime':'schedTime',
+  'response':'accept/reject'
+}
