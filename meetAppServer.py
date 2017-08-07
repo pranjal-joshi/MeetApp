@@ -118,19 +118,24 @@ def onContactSyncRequest(req, socket):
         for i in range(1,total):
             checkThisNumber = str(phonebook[str(i)])
             checkThisNumber = phoneNumberFormatter(checkThisNumber)
-            db.execute("select registered_number from registration_table where registered_number='%s'" % checkThisNumber)
-            data = db.fetchone()
-            if data == None:
-                pass
-            else:
-                existingCount += 1
-                syncedNumbers.update({str(existingCount):str(data[0])})
+            if not (checkThisNumber.find('*') > -1 or checkThisNumber.find('#') > -1):
+                checkThisNumber = checkThisNumber[-10:]
+                #db.execute("select registered_number from registration_table where registered_number='%s'" % checkThisNumber)
+                print "select registered_number from registration_table where registered_number like '%{}%'".format(str(checkThisNumber))
+                db.execute("select registered_number from registration_table where registered_number like '%{}%'".format(str(checkThisNumber)))
+                data = db.fetchone()
+                if data == None:
+                    pass
+                else:
+                    existingCount += 1
+                    syncedNumbers.update({str(existingCount):str(data[0])})
         resp = {'from':'server','existingCount':str(existingCount),'type':'syncResponse','syncedNumbers':syncedNumbers}
         if DEBUG:
             print resp
         socket.write_message(resp)
 
 def checkIfOnline(number):
+    number = str(number[-10:])
     sendPingTo(number)
     startWaitForPongThread(number)
 
@@ -138,7 +143,8 @@ def onPong(resp,socket):
     if(resp['type'] == "pong"):
         number = phoneNumberFormatter(str(resp['from']))
         for thread in threading.enumerate():
-            if thread.name == number:
+            #if thread.name == number:
+            if(number.find(thread.name) > -1):
                 thread.run = False
                 sendToPonger(number,socket)
 
@@ -159,7 +165,9 @@ def sendToPonger(number,socket):
 def sendPingTo(number):
     lenghtOfActiveUsers = len(activeUsers)
     for i in range(0,lenghtOfActiveUsers):
-        if(activeUsers[i].keys()[0] == str(number)):
+        #if(activeUsers[i].keys()[0] == str(number)):
+        if(activeUsers[i].keys()[0].find(str(number)) > -1):
+            number = str(activeUsers[i].keys()[0])
             tempDict = activeUsers[i]
             socket = tempDict[str(number)]
             pingFrame = {'from':'server','type':'ping'}
@@ -200,7 +208,7 @@ def waitingThread(number):
 def onMeetingRequest(req):
     if(req['type'] == 'immidiet' or req['type'] == 'scheduled'):
         sent_from = phoneNumberFormatter(str(req['from']))
-        send_to = phoneNumberFormatter(str(req['to']))
+        send_to = getFullRegisteredNumberFrom(phoneNumberFormatter(str(req['to'])))
         msg = str(req)
         now = str(datetime.datetime.now().strftime("%d/%m/%y %I:%M:%S"))
         expiry = str(getMsgExpiryDate(datetime.datetime.now()))
@@ -265,6 +273,20 @@ def getMsgExpiryDate(datetime):
     except:
         datetime = datetime.replace(year=datetime.year+1,month=1)
     return datetime.strftime("%d/%m/%y %H:%M:%S")
+
+def reasignAutoIncrementOfStoreAndFwd():
+    db.execute("use meetapp_server")
+    db.execute("alter table store_and_fwd_table drop _id")
+    db.execute("alter table store_and_fwd_table auto_increment=1")
+    db.execute("alter table store_and_fwd_table add _id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST")
+    con.commit()
+
+def getFullRegisteredNumberFrom(number):
+    number = str(number[-10:])
+    db.execute("use meetapp_server")
+    db.execute("select registered_number from registration_table where registered_number like '%{}%'".format(str(number)))
+    result = db.fetchone()
+    return result[0]
 
 # TODO: Implement pong receive and do things on pong repsponse -- stop timer/timeout login on pong receive to determine online/offline state
 
