@@ -26,7 +26,7 @@ import datetime
 
 ##### STATIC_VARIABLES #####
 
-PORT = 9404
+PORT = 80
 DEBUG = True
 SHOW_RAW_MSGS = False or True
 NO_OF_CONNECTIONS = 0
@@ -134,6 +134,49 @@ def onContactSyncRequest(req, socket):
         if DEBUG:
             print resp
         socket.write_message(resp)
+
+def onTripLocationUpdateReceive(req):
+    if req['type'] == "locationUpdate":
+        sender = getFullRegisteredNumberFrom(req['from'])
+        send_to = getFullRegisteredNumberFrom(req['to'])
+        req['from'] = "server"
+        req['sender'] = sender
+        req['type'] = "locationInfo"
+        req = json.dumps(req)
+
+        for i in range(0,len(activeUsers)):
+            print activeUsers[i].keys()[0]
+            if(activeUsers[i].keys()[0] == send_to):        # Dont do ping-pong.. send directly to receiver if online
+                tempDict = activeUsers[i]
+                socket = tempDict[send_to]
+                try:
+                    socket.write_message(req)
+                except:
+                    print "WARN: SOCKET_CLOSED"
+                if DEBUG:
+                    print "Sent locationUpdate to: ", send_to
+                break
+            else:
+                pass
+
+def onTripFinishRequest(req):
+    if req['type'] == "tripFinish":
+        sender = getFullRegisteredNumberFrom(req['from'])
+        send_to = getFullRegisteredNumberFrom(req['to'])
+        for i in range(0,len(activeUsers)):
+            print activeUsers[i].keys()[0]
+            if(activeUsers[i].keys()[0] == send_to):        # Dont do ping-pong.. send directly to receiver if online
+                tempDict = activeUsers[i]
+                socket = tempDict[send_to]
+                try:
+                    socket.write_message(req)
+                except:
+                    print "WARN: SOCKET_CLOSED"
+                if DEBUG:
+                    print "Sent locationUpdate to: ", send_to
+                break
+            else:
+                pass
 
 def checkIfOnline(number):
     number = str(number[-10:])
@@ -257,6 +300,8 @@ class WSHandler(tornado.websocket.WebSocketHandler):
         onPong(msg,self)
         onMeetingRequest(msg)
         onMeetingRequestResponse(msg)
+        onTripLocationUpdateReceive(msg)
+        onTripFinishRequest(msg)
 
         if SHOW_RAW_MSGS:
             print message
@@ -304,13 +349,21 @@ def getFullRegisteredNumberFrom(number):            # Gives country_code + numbe
     db.execute("use meetapp_server")
     db.execute("select registered_number from registration_table where registered_number like '%{}%'".format(str(number)))
     result = db.fetchone()
-    return result[0]
+    if DEBUG:
+        print "NUMBER: " + str(number)
+        print "RESULT: " + str(result)
+    try:
+        return result[0]
+    except:
+        return None
 
 # TODO: Implement pong receive and do things on pong repsponse -- stop timer/timeout login on pong receive to determine online/offline state
 
 
 #### Main program ####
-app = tornado.web.Application([(r'/',WSHandler),])
+app = tornado.web.Application([
+        (r'/',WSHandler),
+        ])
 
 if __name__ == "__main__":
     try:
