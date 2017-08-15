@@ -128,8 +128,9 @@ def onContactSyncRequest(req, socket):
                     pass
                 else:
                     if not data[0] in syncedNumbers.values():           # avoids duplicating of same number in json resp
-                        existingCount += 1
-                        syncedNumbers.update({str(existingCount):str(data[0])})
+                        if data[0] != number:                           # don't send syncer's number back to him --> NOT_TESTED <-- Change if ERROR---
+                            existingCount += 1
+                            syncedNumbers.update({str(existingCount):str(data[0])})
         resp = {'from':'server','existingCount':str(existingCount),'type':'syncResponse','syncedNumbers':syncedNumbers}
         if DEBUG:
             print resp
