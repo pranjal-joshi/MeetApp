@@ -131,3 +131,12 @@
   'schedTime':'schedTime',
   'response':'accept/reject'
 }
+
+// send this on trip end to another device.
+
+{
+  'from':'mynumber',
+  'to':'send_to',
+  'type':'tripFinish',
+  'reason':'reached/force'
+}
