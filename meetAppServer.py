@@ -20,6 +20,8 @@ import ast
 import MySQLdb as mdb
 import threading
 import datetime
+import base64
+from Crypto.Cipher import AES
 
 
 ###### Main server #########
@@ -50,7 +52,6 @@ try:
     db = con.cursor()
 except:
     sys.exit("Error connecting MySQL database")
-
 
 ### Core functions ###
 
@@ -120,8 +121,6 @@ def onContactSyncRequest(req, socket):
             checkThisNumber = phoneNumberFormatter(checkThisNumber)
             if not (checkThisNumber.find('*') > -1 or checkThisNumber.find('#') > -1):
                 checkThisNumber = checkThisNumber[-10:]
-                #db.execute("select registered_number from registration_table where registered_number='%s'" % checkThisNumber)
-                print "select registered_number from registration_table where registered_number like '%{}%'".format(str(checkThisNumber))
                 db.execute("select registered_number from registration_table where registered_number like '%{}%'".format(str(checkThisNumber)))
                 data = db.fetchone()
                 if data == None:
@@ -132,9 +131,10 @@ def onContactSyncRequest(req, socket):
                             existingCount += 1
                             syncedNumbers.update({str(existingCount):str(data[0])})
         resp = {'from':'server','existingCount':str(existingCount),'type':'syncResponse','syncedNumbers':syncedNumbers}
+        resp = json.dumps(resp)
         if DEBUG:
             print resp
-        socket.write_message(resp)
+        socket.write_message(aes.encrypt(resp))
 
 def onTripLocationUpdateReceive(req):
     if req['type'] == "locationUpdate":
@@ -151,7 +151,7 @@ def onTripLocationUpdateReceive(req):
                 tempDict = activeUsers[i]
                 socket = tempDict[send_to]
                 try:
-                    socket.write_message(req)
+                    socket.write_message(aes.encrypt(req))
                 except:
                     print "WARN: SOCKET_CLOSED"
                 if DEBUG:
@@ -169,8 +169,9 @@ def onTripFinishRequest(req):
             if(activeUsers[i].keys()[0] == send_to):        # Dont do ping-pong.. send directly to receiver if online
                 tempDict = activeUsers[i]
                 socket = tempDict[send_to]
+                req = json.dumps(req)
                 try:
-                    socket.write_message(req)
+                    socket.write_message(aes.encrypt(req))
                 except:
                     print "WARN: SOCKET_CLOSED"
                 if DEBUG:
@@ -200,7 +201,7 @@ def sendToPonger(number,socket):
     for i in range(0,len(results)):
         _id = results[i][0]
         msg = results[i][1]
-        socket.write_message(msg)
+        socket.write_message(aes.encrypt(msg))
         db.execute("delete from store_and_fwd_table where _id=%d" % _id)
     con.commit()
     if DEBUG:
@@ -216,7 +217,7 @@ def sendPingTo(number):
             tempDict = activeUsers[i]
             socket = tempDict[str(number)]
             pingFrame = {'from':'server','type':'ping'}
-            socket.write_message(json.dumps(pingFrame))
+            socket.write_message(aes.encrypt(json.dumps(pingFrame)))
             if DEBUG:
                 print "Sent ping to: " + str(number)
 
@@ -293,7 +294,8 @@ class WSHandler(tornado.websocket.WebSocketHandler):
     def on_message(self,message):
         global activeUsers
 
-        msg = ast.literal_eval(message)
+        msg = aes.decrypt(message)
+        msg = ast.literal_eval(msg)
 
         onOpen(msg,self)
         onRegisterUserRequest(msg)
@@ -305,7 +307,7 @@ class WSHandler(tornado.websocket.WebSocketHandler):
         onTripFinishRequest(msg)
 
         if SHOW_RAW_MSGS:
-            print message
+            print msg
 
     def on_error(self, error):
         print "Websocket error: " + str(error)
@@ -318,6 +320,34 @@ class WSHandler(tornado.websocket.WebSocketHandler):
             if DEBUG:
                 print "No of connections: " + str(NO_OF_CONNECTIONS)
                 print "Connection closed by " + self.request.remote_ip
+
+class MeetAppSecurity:
+
+	def __init__(self):
+		self.key = "MeetAppSecretKey"
+		self.iv = "alohomora2unlock"
+		self.block_size = AES.block_size
+
+	def pad(self,plain_text):
+		number_of_bytes_to_pad = self.block_size - len(plain_text) % self.block_size
+		ascii_string = chr(number_of_bytes_to_pad)
+		padding_str = number_of_bytes_to_pad * ascii_string
+		padded_plain_text =  plain_text + padding_str
+		return padded_plain_text
+
+	def unpad(self,s):
+		return s[0:-ord(s[-1])]
+
+	def encrypt(self,raw):
+		cipher = AES.new(self.key, AES.MODE_CBC, self.iv)
+		raw = self.pad(raw)
+		e = cipher.encrypt(raw)
+		return base64.b64encode(e)
+
+	def decrypt(self,enc):
+		decipher = AES.new(self.key, AES.MODE_CBC, self.iv)
+		enc = base64.b64decode(enc)
+		return self.unpad(decipher.decrypt(enc))
 
 
 #### Helper functions ####
@@ -369,6 +399,8 @@ app = tornado.web.Application([
 if __name__ == "__main__":
     try:
         os.system("clear")
+        ### Security constructor ###
+        aes = MeetAppSecurity()
         print "\n\r[ MeetApp ]"
         print "Started at: " + time.strftime("%d/%m/%y  %I:%M:%S %p")
         print "IP Address: " + str(os.popen("hostname -I").read())
@@ -379,7 +411,8 @@ if __name__ == "__main__":
             myIP = socket.gethostbyname(socket.gethostname())
             print "Starting tornado socket server at %s:%s" % (str(os.popen("hostname -I").read().replace('\n','')),PORT)
             tornado.ioloop.IOLoop.instance().start()
-        except:
+        except Exception as e:
+            raise e
             sys.exit("\noops! Tornado exception occured!")
     except(KeyboardInterrupt):
         sys.exit("KeyboardInterrupt.. exiting..")
