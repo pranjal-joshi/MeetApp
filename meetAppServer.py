@@ -22,6 +22,7 @@ import threading
 import datetime
 import base64
 from Crypto.Cipher import AES
+from pyfcm import FCMNotification
 
 
 ###### Main server #########
@@ -32,10 +33,12 @@ PORT = 80
 DEBUG = True
 SHOW_RAW_MSGS = False or True
 NO_OF_CONNECTIONS = 0
-PONG_TIMEOUT = 30       # seconds
+PONG_TIMEOUT = 10       # seconds
 DB_NAME = "meetapp_server"
 DB_USER = "root"
 DB_PASSWD = "linux"
+ANDROID_PACKAGE_NAME = 'com.cyberfox.meetapp'
+FCM_KEY = "AAAAR9TOyxc:APA91bHqHw0U9vYdtdU-dOWijZR1lHSZHvIse42udNxWNgPc3syNg3im-fVpRBJE3qgCQq4vgVgwQr4LFugL33Ia4s8YddEyMYo7KDibOuoxl8LehlCHg40okxnIeIuD7ltfXlxZava1"
 
 #### Global variables ####
 
@@ -45,6 +48,9 @@ offlineClientNumbers = []
 connectionAlreadyExists = False
 replaceCount = 0
 
+### JSON Data ###
+
+push_open = {"pushType":"open"}
 
 ### Database connection ###
 try:
@@ -52,6 +58,13 @@ try:
     db = con.cursor()
 except:
     sys.exit("Error connecting MySQL database")
+
+### FCM Push service ###
+try:
+    fcm = FCMNotification(api_key=FCM_KEY)
+except Exception as e:
+    raise e
+    Sys.exit("Failed to init FCM PUSH SERVICE")
 
 ### Core functions ###
 
@@ -66,7 +79,7 @@ def initDB():
         print "---> Database not found. creating...\n"
         db.execute("create database %s" % DB_NAME)
         db.execute("use %s" % DB_NAME)
-        db.execute("create table registration_table(_id BIGINT NOT NULL AUTO_INCREMENT, registered_number VARCHAR(20) NOT NULL, PRIMARY KEY(_id))")
+        db.execute("create table registration_table(_id BIGINT NOT NULL AUTO_INCREMENT, registered_number VARCHAR(20) NOT NULL, fcm_token VARCHAR(500) NOT NULL, PRIMARY KEY(_id))")
         db.execute("create table store_and_fwd_table(_id BIGINT NOT NULL AUTO_INCREMENT, arrive_timestamp VARCHAR(20), expire_timestamp VARCHAR(20), send_to VARCHAR(15), sent_from VARCHAR(15), message VARCHAR(4000), PRIMARY KEY(_id))")
         con.commit()
 
@@ -96,17 +109,41 @@ def onRegisterUserRequest(req):
     if req['type'] == "register":
         number = str(req['from'])
         number = phoneNumberFormatter(number)
+        fcm_token = str(req['fcm_token'])
         db.execute("use meetapp_server")
         db.execute("select _id from registration_table where registered_number=%s" % number)
         data = db.fetchall()
         if not data:
-            db.execute("insert into registration_table(registered_number) values ('%s')" % number)
+            db.execute("insert into registration_table(registered_number, fcm_token) values ('%s','%s')" % (number, fcm_token))
             con.commit()
             if DEBUG:
                 print "New user registered: %s" % number
         else:
             if DEBUG:
                 print "User already exists: %s" % number
+
+def onDeleteAccountRequest(req):
+    if(req['type'] == "deleteAccount"):
+        number = phoneNumberFormatter(str(req['from']))
+        fcm_token = str(req['fcm_token'])
+        db.execute("use meetapp_server")
+        db.execute("delete from registration_table where registered_number=%s" % number)
+        con.commit()
+
+def onUpdateTokenRequest(req):
+    if req['type'] == "tokenUpdate":
+        number = str(req['from'])
+        number = phoneNumberFormatter(number)
+        token = str(req['fcm_token'])
+        if number is None:
+            number = "null"
+        if token is None:
+            token = "null"
+        db.execute("use meetapp_server")
+        db.execute("update registration_table set fcm_token='%s' where registered_number='%s'" % (token,number))
+        con.commit()
+        if DEBUG:
+            print "Token Updated. Token: " + token + " From: " + number
 
 def onContactSyncRequest(req, socket):
     if req['type'] == "syncRequest":
@@ -181,9 +218,10 @@ def onTripFinishRequest(req):
                 pass
 
 def checkIfOnline(number):
+    e164Number = number
     number = str(number[-10:])
     sendPingTo(number)
-    startWaitForPongThread(number)
+    startWaitForPongThread(number, e164Number)
 
 def onPong(resp,socket):
     if(resp['type'] == "pong"):
@@ -227,12 +265,13 @@ def registerAsOffline(number):
     else:
         offlineClientNumbers.append(str(number))
 
-def startWaitForPongThread(number):
+def startWaitForPongThread(number,e164number):
     number = str(number)
-    t = threading.Thread(target=waitingThread, name=number, args=(number,))
+    e164number = str(e164number)
+    t = threading.Thread(target=waitingThread, name=number, args=(number,e164number,))
     t.start()
 
-def waitingThread(number):
+def waitingThread(number,e164number):
     if DEBUG:
         print "Started waiting thread for pong from: %s" % number
     t = threading.current_thread()
@@ -243,6 +282,7 @@ def waitingThread(number):
     print "TIME_CNT: " + str(timeCnt) + "\tPONG_TIMEOUT: " + str(PONG_TIMEOUT)
     if(timeCnt == PONG_TIMEOUT):
         registerAsOffline(number)
+        pushOpenToDevice(e164number)
         if DEBUG:
             print "Waiting thread expired - Adding to offline list: %s" % number
     else:
@@ -279,6 +319,12 @@ def onMeetingRequestResponse(resp):
         con.commit()
         checkIfOnline(send_to)
 
+def pushOpenToDevice(number):
+    fcm_token = getFCMIdOfUser(number)
+    result = fcm.notify_single_device(registration_id=fcm_token, data_message=push_open, restricted_package_name=ANDROID_PACKAGE_NAME)
+    if DEBUG:
+        print "Sent open push to: " + number
+
 
 ##### WebSocketHandler class #####
 
@@ -305,6 +351,8 @@ class WSHandler(tornado.websocket.WebSocketHandler):
         onMeetingRequestResponse(msg)
         onTripLocationUpdateReceive(msg)
         onTripFinishRequest(msg)
+        onUpdateTokenRequest(msg)
+        onDeleteAccountRequest(msg)
 
         if SHOW_RAW_MSGS:
             print msg
@@ -387,6 +435,16 @@ def getFullRegisteredNumberFrom(number):            # Gives country_code + numbe
         return result[0]
     except:
         return None
+
+def getFCMIdOfUser(number):
+    number = phoneNumberFormatter(number)
+    db.execute("use meetapp_server")
+    db.execute("select fcm_token from registration_table where registered_number=%s" % number)
+    result = db.fetchone()
+    try:
+        return result[0]
+    except Exception as q:
+        raise q
 
 # TODO: Implement pong receive and do things on pong repsponse -- stop timer/timeout login on pong receive to determine online/offline state
 
