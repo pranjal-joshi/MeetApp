@@ -31,6 +31,7 @@ from pyfcm import FCMNotification
 
 PORT = 80
 DEBUG = True
+PUSH_ENABLE = True
 SHOW_RAW_MSGS = False or True
 NO_OF_CONNECTIONS = 0
 PONG_TIMEOUT = 10       # seconds
@@ -55,6 +56,7 @@ push_open = {"pushType":"open"}
 ### Database connection ###
 try:
     con = mdb.connect("localhost",DB_USER,DB_PASSWD)
+    con.ping(True)
     db = con.cursor()
 except:
     sys.exit("Error connecting MySQL database")
@@ -282,7 +284,8 @@ def waitingThread(number,e164number):
     print "TIME_CNT: " + str(timeCnt) + "\tPONG_TIMEOUT: " + str(PONG_TIMEOUT)
     if(timeCnt == PONG_TIMEOUT):
         registerAsOffline(number)
-        pushOpenToDevice(e164number)
+        if PUSH_ENABLE:
+            pushOpenToDevice(e164number)
         if DEBUG:
             print "Waiting thread expired - Adding to offline list: %s" % number
     else:
@@ -463,6 +466,7 @@ if __name__ == "__main__":
         print "Started at: " + time.strftime("%d/%m/%y  %I:%M:%S %p")
         print "IP Address: " + str(os.popen("hostname -I").read())
         initDB()
+        reasignAutoIncrementOfStoreAndFwd()
         try:
             http_server = tornado.httpserver.HTTPServer(app)
             http_server.listen(PORT)
