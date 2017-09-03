@@ -18,6 +18,7 @@ import time
 import sys
 import ast
 import MySQLdb as mdb
+import pymysql.cursors
 import threading
 import datetime
 import base64
@@ -31,8 +32,9 @@ from pyfcm import FCMNotification
 
 PORT = 80
 DEBUG = True
+USE_PYMYSQL = False
 PUSH_ENABLE = True
-SHOW_RAW_MSGS = False or True
+SHOW_RAW_MSGS = True
 NO_OF_CONNECTIONS = 0
 PONG_TIMEOUT = 10       # seconds
 DB_NAME = "meetapp_server"
@@ -53,21 +55,6 @@ replaceCount = 0
 
 push_open = {"pushType":"open"}
 
-### Database connection ###
-try:
-    con = mdb.connect("localhost",DB_USER,DB_PASSWD)
-    con.ping(True)
-    db = con.cursor()
-except:
-    sys.exit("Error connecting MySQL database")
-
-### FCM Push service ###
-try:
-    fcm = FCMNotification(api_key=FCM_KEY)
-except Exception as e:
-    raise e
-    Sys.exit("Failed to init FCM PUSH SERVICE")
-
 ### Core functions ###
 
 def initDB():
@@ -83,7 +70,7 @@ def initDB():
         db.execute("use %s" % DB_NAME)
         db.execute("create table registration_table(_id BIGINT NOT NULL AUTO_INCREMENT, registered_number VARCHAR(20) NOT NULL, fcm_token VARCHAR(500) NOT NULL, PRIMARY KEY(_id))")
         db.execute("create table store_and_fwd_table(_id BIGINT NOT NULL AUTO_INCREMENT, arrive_timestamp VARCHAR(20), expire_timestamp VARCHAR(20), send_to VARCHAR(15), sent_from VARCHAR(15), message VARCHAR(4000), PRIMARY KEY(_id))")
-        con.commit()
+        #con.commit()
 
 def onOpen(msg,socket):
     if msg['type'] == "onOpen":
@@ -117,7 +104,7 @@ def onRegisterUserRequest(req):
         data = db.fetchall()
         if not data:
             db.execute("insert into registration_table(registered_number, fcm_token) values ('%s','%s')" % (number, fcm_token))
-            con.commit()
+            #con.commit()
             if DEBUG:
                 print "New user registered: %s" % number
         else:
@@ -130,7 +117,7 @@ def onDeleteAccountRequest(req):
         fcm_token = str(req['fcm_token'])
         db.execute("use meetapp_server")
         db.execute("delete from registration_table where registered_number=%s" % number)
-        con.commit()
+        #con.commit()
 
 def onUpdateTokenRequest(req):
     if req['type'] == "tokenUpdate":
@@ -143,7 +130,7 @@ def onUpdateTokenRequest(req):
             token = "null"
         db.execute("use meetapp_server")
         db.execute("update registration_table set fcm_token='%s' where registered_number='%s'" % (token,number))
-        con.commit()
+        #con.commit()
         if DEBUG:
             print "Token Updated. Token: " + token + " From: " + number
 
@@ -165,10 +152,17 @@ def onContactSyncRequest(req, socket):
                 if data == None:
                     pass
                 else:
-                    if not data[0] in syncedNumbers.values():           # avoids duplicating of same number in json resp
-                        if data[0] != number:                           # don't send syncer's number back to him --> NOT_TESTED <-- Change if ERROR---
-                            existingCount += 1
-                            syncedNumbers.update({str(existingCount):str(data[0])})
+                    if not USE_PYMYSQL:
+                        if not data[0] in syncedNumbers.values():           # avoids duplicating of same number in json resp
+                            if data[0] != number:                           # don't send syncer's number back to him --> NOT_TESTED <-- Change if ERROR---
+                                existingCount += 1
+                                syncedNumbers.update({str(existingCount):str(data[0])})
+                    else:
+                        if not data['registered_number'] in syncedNumbers.values():           # avoids duplicating of same number in json resp
+                            if data['registered_number'] != number:                           # don't send syncer's number back to him --> NOT_TESTED <-- Change if ERROR---
+                                existingCount += 1
+                                syncedNumbers.update({str(existingCount):str(data['registered_number'])})
+
         resp = {'from':'server','existingCount':str(existingCount),'type':'syncResponse','syncedNumbers':syncedNumbers}
         resp = json.dumps(resp)
         if DEBUG:
@@ -239,11 +233,15 @@ def sendToPonger(number,socket):
     db.execute("select _id, message from store_and_fwd_table where send_to='%s'" % number)
     results = db.fetchall()
     for i in range(0,len(results)):
-        _id = results[i][0]
-        msg = results[i][1]
+        if USE_PYMYSQL:
+            _id = results[i]['_id']
+            msg = results[i]['msg']
+        else:
+            _id = results[i][0]
+            msg = results[i][1]
         socket.write_message(aes.encrypt(msg))
         db.execute("delete from store_and_fwd_table where _id=%d" % _id)
-    con.commit()
+    #con.commit()
     if DEBUG:
         print "Sending stored messages to ponger: %s" % number
 
@@ -303,7 +301,7 @@ def onMeetingRequest(req):
         expiry = str(getMsgExpiryDate(datetime.datetime.now()))
         db.execute("use meetapp_server")
         db.execute("insert into store_and_fwd_table (arrive_timestamp, expire_timestamp, send_to, sent_from, message) values ('%s', '%s', '%s', '%s', \"%s\")" % (now, expiry, send_to, sent_from, msg))
-        con.commit()
+        #con.commit()
         checkIfOnline(send_to)
 
 def onMeetingRequestResponse(resp):
@@ -319,7 +317,7 @@ def onMeetingRequestResponse(resp):
         expiry = str(getMsgExpiryDate(datetime.datetime.now()))
         db.execute("use meetapp_server")
         db.execute("insert into store_and_fwd_table (arrive_timestamp, expire_timestamp, send_to, sent_from, message) values ('%s', '%s', '%s', '%s', \"%s\")" % (now, expiry, send_to, sent_from, msg))
-        con.commit()
+        #con.commit()
         checkIfOnline(send_to)
 
 def pushOpenToDevice(number):
@@ -401,6 +399,32 @@ class MeetAppSecurity:
 		return self.unpad(decipher.decrypt(enc))
 
 
+class MeetAppDatabase():
+    con = None
+    cursor = None
+
+    def connect(self):
+        self.con = mdb.connect("localhost",DB_USER,DB_PASSWD)
+        self.cursor = self.con.cursor()
+
+    def execute(self, query):
+        try:
+            self.cursor.execute(query)
+            self.con.commit()
+        except (mdb.OperationalError, AttributeError):
+            print "Database Exception -- Reconnecting..."
+            self.connect()
+            self.cursor.execute(query)
+            self.con.commit()
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+
+
 #### Helper functions ####
 
 def phoneNumberFormatter(number):                   # Phone number string cleaner
@@ -424,13 +448,15 @@ def reasignAutoIncrementOfStoreAndFwd():            # auto_increment maintainer
     db.execute("alter table store_and_fwd_table drop _id")
     db.execute("alter table store_and_fwd_table auto_increment=1")
     db.execute("alter table store_and_fwd_table add _id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST")
-    con.commit()
+    #con.commit()
 
 def getFullRegisteredNumberFrom(number):            # Gives country_code + number for given only number
     number = str(number[-10:])
     db.execute("use meetapp_server")
     db.execute("select registered_number from registration_table where registered_number like '%{}%'".format(str(number)))
     result = db.fetchone()
+    if USE_PYMYSQL:
+        result = result['registered_number']
     if DEBUG:
         print "NUMBER: " + str(number)
         print "RESULT: " + str(result)
@@ -445,14 +471,46 @@ def getFCMIdOfUser(number):
     db.execute("select fcm_token from registration_table where registered_number=%s" % number)
     result = db.fetchone()
     try:
-        return result[0]
+        if USE_PYMYSQL:
+            return result['fcm_token']
+        else:
+            return result[0]
     except Exception as q:
         raise q
 
-# TODO: Implement pong receive and do things on pong repsponse -- stop timer/timeout login on pong receive to determine online/offline state
 
 
 #### Main program ####
+
+### Database connection ###
+try:
+    if not USE_PYMYSQL:
+        print "Using MySQLdb..."
+        #con = mdb.connect("localhost",DB_USER,DB_PASSWD)
+        #con.ping(True)
+        #db = con.cursor()
+        db = MeetAppDatabase()
+    else:
+        print "Using PyMySQL..."
+        con = pymysql.connect(host="localhost",
+                        user="root",
+                        password="linux",
+                        db="meetapp_server",
+                        charset="utf8mb4",
+                        cursorclass=pymysql.cursors.DictCursor)
+        db = con.cursor()
+except Exception as e:
+    raise e
+    sys.exit("Error connecting MySQL database")
+
+### FCM Push service ###
+try:
+    fcm = FCMNotification(api_key=FCM_KEY)
+except Exception as e:
+    raise e
+    Sys.exit("Failed to init FCM PUSH SERVICE")
+
+
 app = tornado.web.Application([
         (r'/',WSHandler),
         ])
@@ -465,6 +523,10 @@ if __name__ == "__main__":
         print "\n\r[ MeetApp ]"
         print "Started at: " + time.strftime("%d/%m/%y  %I:%M:%S %p")
         print "IP Address: " + str(os.popen("hostname -I").read())
+        if USE_PYMYSQL:
+            print "Using PyMySQL..."
+        else:
+            print "Using MySQLdb..."
         initDB()
         reasignAutoIncrementOfStoreAndFwd()
         try:
