@@ -37,9 +37,11 @@ PUSH_ENABLE = True
 SHOW_RAW_MSGS = True
 NO_OF_CONNECTIONS = 0
 PONG_TIMEOUT = 10       # seconds
+CONNECTION_CLOSE_TIMEOUT = 20 # Minutes
 DB_NAME = "meetapp_server"
 DB_USER = "root"
 DB_PASSWD = "linux"
+DB_NAME = "meetapp_server"
 ANDROID_PACKAGE_NAME = 'com.cyberfox.meetapp'
 FCM_KEY = "AAAAR9TOyxc:APA91bHqHw0U9vYdtdU-dOWijZR1lHSZHvIse42udNxWNgPc3syNg3im-fVpRBJE3qgCQq4vgVgwQr4LFugL33Ia4s8YddEyMYo7KDibOuoxl8LehlCHg40okxnIeIuD7ltfXlxZava1"
 
@@ -334,6 +336,7 @@ class WSHandler(tornado.websocket.WebSocketHandler):
     def open(self):
         global NO_OF_CONNECTIONS
         NO_OF_CONNECTIONS += 1
+        self.timeout = tornado.ioloop.IOLoop.current().add_timeout(datetime.timedelta(minutes=CONNECTION_CLOSE_TIMEOUT), self.timeout_close)
         if DEBUG:
             print "New connection: " + self.request.remote_ip
             print "No of connections: " + str(NO_OF_CONNECTIONS)
@@ -370,6 +373,14 @@ class WSHandler(tornado.websocket.WebSocketHandler):
                 print "No of connections: " + str(NO_OF_CONNECTIONS)
                 print "Connection closed by " + self.request.remote_ip
 
+    def timeout_close(self):
+        global NO_OF_CONNECTIONS
+        NO_OF_CONNECTIONS -= 1
+        if DEBUG:
+            print "Connection timeout - Closing -->: %s" % self.request.remote_ip
+            print "No. of open connections: %d" % NO_OF_CONNECTIONS
+        self.close()
+
 class MeetAppSecurity:
 
 	def __init__(self):
@@ -404,7 +415,7 @@ class MeetAppDatabase():
     cursor = None
 
     def connect(self):
-        self.con = mdb.connect("localhost",DB_USER,DB_PASSWD)
+        self.con = mdb.connect(host="localhost",user=DB_USER,passwd=DB_PASSWD,db=DB_NAME)
         self.cursor = self.con.cursor()
 
     def execute(self, query):
@@ -449,6 +460,13 @@ def reasignAutoIncrementOfStoreAndFwd():            # auto_increment maintainer
     db.execute("alter table store_and_fwd_table auto_increment=1")
     db.execute("alter table store_and_fwd_table add _id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST")
     #con.commit()
+
+def reasignAutoIncrementOfRegistrationTable():
+    db.execute("use meetapp_server")
+    db.execute("alter table registration_table drop _id")
+    db.execute("alter table registration_table auto_increment=1")
+    db.execute("alter table registration_table add _id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST")
+
 
 def getFullRegisteredNumberFrom(number):            # Gives country_code + number for given only number
     number = str(number[-10:])
@@ -529,11 +547,12 @@ if __name__ == "__main__":
             print "Using MySQLdb..."
         initDB()
         reasignAutoIncrementOfStoreAndFwd()
+        reasignAutoIncrementOfRegistrationTable()
         try:
             http_server = tornado.httpserver.HTTPServer(app)
             http_server.listen(PORT)
             myIP = socket.gethostbyname(socket.gethostname())
-            print "Starting tornado socket server at %s:%s" % (str(os.popen("hostname -I").read().replace('\n','')),PORT)
+            print "Starting tornado socket server at %s:%s\n" % (str(os.popen("hostname -I").read().replace('\n','')),PORT)
             tornado.ioloop.IOLoop.instance().start()
         except Exception as e:
             raise e
